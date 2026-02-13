@@ -1,0 +1,10 @@
+# Stereo extrinsics: rotation (R) and translation (T) from left to right camera
+# Generated from right camera projection matrix (baseline = -Tx/fx)
+rotation_matrix:
+  rows: 3
+  cols: 3
+  data: [1.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000, 0.00000000, 0.00000000, 0.00000000, 1.00000000]
+translation:
+  rows: 3
+  cols: 1
+  data: [0.23547278, 0.00000000, 0.00000000]

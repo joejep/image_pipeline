@@ -654,7 +654,7 @@ class Calibrator():
         return calmessage
 
     @staticmethod
-    def lryaml(name, d, k, r, p, size, cam_model):
+    def lryaml(name, d, k, r, p, size, cam_model, camera_to_world=None):
         def format_mat(x, precision):
             return ("[%s]" % (
                 numpy.array2string(x, precision=precision, suppress_small=True, separator=", ")
@@ -689,6 +689,15 @@ class Calibrator():
             "  data: " + format_mat(p, 5),
             ""
         ])
+        if camera_to_world is not None:
+            calmessage += "\n".join([
+                "# Camera pose in world frame (world = calibration board at reference frame)",
+                "camera_to_world:",
+                "  rows: 4",
+                "  cols: 4",
+                "  data: " + format_mat(camera_to_world, 8),
+                ""
+            ])
         return calmessage
 
     def do_save(self):
@@ -1088,6 +1097,9 @@ class StereoCalibrator(Calibrator):
         # Collecting from two cameras in a horizontal stereo rig, can't get
         # full X range in the left camera.
         self.param_ranges[0] = 0.4
+        # Camera-to-world (4x4) for left and right; world = calibration board at reference frame.
+        self.left_cam2world = None
+        self.right_cam2world = None
 
     #override
     def set_cammodel(self, modeltype):
@@ -1197,6 +1209,40 @@ class StereoCalibrator(Calibrator):
 
         self.set_alpha(0.0)
 
+        # Compute camera-to-world for left and right (world = calibration board at reference frame)
+        ref_idx = 0
+        opts_list = list(opts)
+        lipts_list = list(lipts)
+        ripts_list = list(ripts)
+        obj_pts = opts_list[ref_idx]
+        left_pts = lipts_list[ref_idx]
+        right_pts = ripts_list[ref_idx]
+
+        def _board_to_cam2world(rvec, tvec):
+            R_b2c, _ = cv2.Rodrigues(rvec)
+            M = numpy.eye(4, dtype=numpy.float64)
+            M[:3, :3] = R_b2c
+            M[:3, 3] = tvec.ravel()
+            return numpy.linalg.inv(M)
+
+        if self.camera_model == CAMERA_MODEL.PINHOLE:
+            ok_l, rvec_l, tvec_l = cv2.solvePnP(
+                obj_pts, left_pts, self.l.intrinsics, self.l.distortion)
+            ok_r, rvec_r, tvec_r = cv2.solvePnP(
+                obj_pts, right_pts, self.r.intrinsics, self.r.distortion)
+        else:
+            ok_l, rvec_l, tvec_l = cv2.fisheye.solvePnP(
+                obj_pts, left_pts, self.l.intrinsics, self.l.distortion)
+            ok_r, rvec_r, tvec_r = cv2.fisheye.solvePnP(
+                obj_pts, right_pts, self.r.intrinsics, self.r.distortion)
+
+        if ok_l and ok_r:
+            self.left_cam2world = _board_to_cam2world(rvec_l, tvec_l)
+            self.right_cam2world = _board_to_cam2world(rvec_r, tvec_r)
+        else:
+            self.left_cam2world = None
+            self.right_cam2world = None
+
     def set_alpha(self, a):
         """
         Set the alpha value for the calibrated camera solution. The
@@ -1255,6 +1301,19 @@ class StereoCalibrator(Calibrator):
         return (self.lrmsg(self.l.distortion, self.l.intrinsics, self.l.R, self.l.P, self.size, self.l.camera_model),
                 self.lrmsg(self.r.distortion, self.r.intrinsics, self.r.R, self.r.P, self.size, self.r.camera_model))
 
+    def yaml(self, suffix, info, camera_to_world=None):
+        """Return YAML string for one camera (left or right) with optional camera_to_world 4x4."""
+        return self.lryaml(
+            self.name + suffix,
+            info.distortion,
+            info.intrinsics,
+            info.R,
+            info.P,
+            self.size,
+            self.camera_model,
+            camera_to_world=camera_to_world,
+        )
+
     def from_message(self, msgs, alpha = 0.0):
         """ Initialize the camera calibration from a pair of CameraInfo messages.  """
         self.size = (msgs[0].width, msgs[0].height)
@@ -1268,23 +1327,8 @@ class StereoCalibrator(Calibrator):
         if False:
             self.set_alpha(0.0)
 
-    def report(self):
-        print("\nLeft:")
-        self.lrreport(self.l.distortion, self.l.intrinsics, self.l.R, self.l.P)
-        print("\nRight:")
-        self.lrreport(self.r.distortion, self.r.intrinsics, self.r.R, self.r.P)
-        print("self.T =", numpy.ravel(self.T).tolist())
-        print("self.R =", numpy.ravel(self.R).tolist())
-
-    def ost(self):
-        return (self.lrost(self.name + "/left", self.l.distortion, self.l.intrinsics, self.l.R, self.l.P, self.size) +
-          self.lrost(self.name + "/right", self.r.distortion, self.r.intrinsics, self.r.R, self.r.P, self.size))
-
-    def yaml(self, suffix, info):
-        return self.lryaml(self.name + suffix, info.distortion, info.intrinsics, info.R, info.P, self.size, self.camera_model)
-
-    # TODO Get rid of "from_images" versions of these, instead have function to get undistorted corners
-    def epipolar_error_from_images(self, limage, rimage):
+   
+   
         """
         Detect the checkerboard in both images and compute the epipolar error.
         Mainly for use in tests.
@@ -1445,9 +1489,13 @@ class StereoCalibrator(Calibrator):
 
         for (name, im) in ims:
             taradd(name, cv2.imencode(".png", im)[1].tostring())
-        taradd('left.yaml', self.yaml("/left", self.l))
-        taradd('right.yaml', self.yaml("/right", self.r))
+        left_cam2world = getattr(self, 'left_cam2world', None)
+        right_cam2world = getattr(self, 'right_cam2world', None)
+        taradd('left.yaml', self.yaml("/left", self.l, camera_to_world=left_cam2world))
+        taradd('right.yaml', self.yaml("/right", self.r, camera_to_world=right_cam2world))
         taradd('ost.txt', self.ost())
+        # Save stereo extrinsics (R, T from left to right) so they can be loaded later
+        taradd('stereo_extrinsics.yaml', self._stereo_extrinsics_yaml())
 
     def do_tarfile_calibration(self, filename):
         archive = tarfile.open(filename, 'r')
