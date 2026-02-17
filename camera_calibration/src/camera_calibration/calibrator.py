@@ -1314,6 +1314,45 @@ class StereoCalibrator(Calibrator):
             camera_to_world=camera_to_world,
         )
 
+    def report(self):
+        """Print calibration parameters for both left and right cameras."""
+        print("Left camera:")
+        self.lrreport(self.l.distortion, self.l.intrinsics, self.l.R, self.l.P)
+        print("Right camera:")
+        self.lrreport(self.r.distortion, self.r.intrinsics, self.r.R, self.r.P)
+
+    def ost(self):
+        """Return oST format string for both left and right cameras."""
+        left_ost = self.lrost(
+            self.name + "/left",
+            self.l.distortion, self.l.intrinsics, self.l.R, self.l.P,
+            self.size,
+        )
+        right_ost = self.lrost(
+            self.name + "/right",
+            self.r.distortion, self.r.intrinsics, self.r.R, self.r.P,
+            self.size,
+        )
+        return left_ost + "\n" + right_ost
+
+    def _stereo_extrinsics_yaml(self):
+        """Return YAML string with rotation R and translation T from left to right camera."""
+        def format_mat(mat, precision=8):
+            flat = numpy.ravel(mat)
+            return "[%s]" % ", ".join("%.*f" % (precision, x) for x in flat)
+        return "\n".join([
+            "# Stereo extrinsics: rotation (R) and translation (T) from left to right camera",
+            "rotation_matrix:",
+            "  rows: 3",
+            "  cols: 3",
+            "  data: %s" % format_mat(self.R),
+            "translation:",
+            "  rows: 3",
+            "  cols: 1",
+            "  data: %s" % format_mat(self.T),
+            "",
+        ])
+
     def from_message(self, msgs, alpha = 0.0):
         """ Initialize the camera calibration from a pair of CameraInfo messages.  """
         self.size = (msgs[0].width, msgs[0].height)
